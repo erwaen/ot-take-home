@@ -84,30 +84,37 @@ Only call a tool when it directly informs your triage decision. Performative or 
 
 ## Output format
 
-After all tool calls are complete, respond with ONLY a fenced JSON block and nothing else:
+After all tool calls are complete, respond with ONLY a fenced JSON block and nothing else. The block must be valid JSON.
 
 \`\`\`json
 {
-  "classification": "<new_referral|existing_patient_request|scheduling|clinical_question|billing_question|missing_paperwork|provider_followup|complaint|safeguarding|spam|other>",
-  "urgency": "<P0|P1|P2|P3>",
+  "classification": "new_referral",
+  "urgency": "P2",
   "extracted_intake": {
-    "child_name": "<string or null>",
-    "dob_or_age": "<string or null>",
-    "parent_contact": "<string or null>",
-    "discipline": ["<SLP|OT|PT>"] or null,
-    "diagnosis_or_concern": "<string or null>",
-    "payer": "<string or null>",
-    "member_id": "<string or null>"
+    "child_name": "string or null",
+    "dob_or_age": "string or null",
+    "parent_contact": "string or null",
+    "discipline": ["SLP"],
+    "diagnosis_or_concern": "string or null",
+    "payer": "string or null",
+    "member_id": "string or null"
   },
-  "missing_info": ["<field name>"],
-  "recommended_next_action": "<one clear sentence for staff>",
-  "draft_reply": "<message body for the sender, or null if no reply is appropriate>",
-  "escalation": { "reason": "<string>", "severity": "<P0|P1>" } or null,
-  "decision_rationale": "<2–3 sentences explaining the triage decision and how tool results informed it>"
+  "missing_info": [],
+  "recommended_next_action": "One clear sentence for staff.",
+  "draft_reply": "Message body, or null if no reply is needed.",
+  "escalation": null,
+  "decision_rationale": "2-3 sentences explaining the triage decision and how tool results informed it."
 }
 \`\`\`
 
-The draft_reply must be clear, empathetic, and concise. It must not give clinical advice or imply it has been sent.`;
+Field rules:
+- classification: one of new_referral | existing_patient_request | scheduling | clinical_question | billing_question | missing_paperwork | provider_followup | complaint | safeguarding | spam | other
+- urgency: P0 | P1 | P2 | P3
+- extracted_intake.discipline: array of SLP/OT/PT values, or null if unknown
+- escalation: null, or { "reason": "...", "severity": "P0" or "P1" }
+- draft_reply: must not give clinical advice or imply the message was sent
+
+Replace every placeholder with real values. Do not output anything outside the fenced block.`;
 
 const TOOLS: Tool[] = [
   {
