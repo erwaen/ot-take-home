@@ -129,28 +129,15 @@ The `MAX_STEPS = 6` guard is the safety net — if the model keeps calling tools
 
 ## 4. Failure Modes and Production Eval
 
-The scariest failure in this domain is a missed P0. If Leo's voicemail doesn't trigger a safeguarding escalation, a child may be in danger and no one at the practice knows. Everything else is recoverable; that isn't. So the system prompt treats safeguarding as a hard rule with no exceptions, and I'd want that tested adversarially before going anywhere near production.
+The scariest failure in this domain isn't a schema error or a wrong classification — it's a missed P0. If Leo's voicemail doesn't trigger a safeguarding escalation, a child may be in danger and nobody at the practice knows about it. Everything else is recoverable. That isn't. That's why I treated safeguarding as the one thing that gets two layers of protection instead of one, and why the post-processing override exists — I don't want the safety of a child to depend entirely on a language model having a good day.
 
-**Failure modes I thought about:**
+The other failure I thought about a lot is the opposite one: over-escalation. If the agent cries wolf and marks half the inbox as P0, the clinical lead stops paying attention, staff get desensitized, and the real P0 gets buried. So the prompt explicitly names over-escalation as a failure mode on equal footing with under-escalation. P0 should feel rare and serious when it appears.
 
-| Mode | What breaks | How I handled it |
-|---|---|---|
-| Missed safeguarding signal | Child at risk, no escalation triggered | Hard rule in prompt: *any* harm/abuse language → `lookup_policy(safeguarding)` → `escalate(P0)`. Not a soft suggestion. |
-| Over-escalation | Clinical lead time wasted on P3 items | Explicit "over-escalation is itself a failure" in prompt; P3 defined for developmental questions with no action needed |
-| LLM non-determinism | Same item triaged differently on re-runs | Strict prompt rules reduce variance; `decision_rationale` makes the reasoning auditable so a human can catch a bad call |
-| Runaway tool loop | Agent calls tools forever, never finishes | `MAX_STEPS = 6` guard — throws a named error so the item fails visibly rather than silently |
-| `max_tokens` hit | No JSON block in response → parse throws | Currently surfaces as a hard error; production needs a retry with a shorter prompt fallback |
-| API error or 429 | Item fails, rest of batch continues | No retry logic in this build — a single failure propagates; production needs exponential backoff |
-| LLM hallucinates a forbidden tool | Validator fails | Forbidden tools (`send_message`, `schedule_appointment`) are not in the tool definitions, so the model can't call them |
+Beyond safeguarding, the main things that can go wrong are the usual LLM problems — non-determinism means the same item might get classified differently on two runs, and there's no retry logic today, so a single API error or rate limit will fail that item and surface as an exception. The `MAX_STEPS = 6` guard handles the case where the model keeps calling tools without ever writing a final output — it throws a named error so the failure is visible rather than silent.
 
-**How I'd eval this in production:**
+For forbidden actions — sending a message, scheduling an appointment — the protection is structural: those tools simply don't exist in the tool definitions the model receives. You can't call a tool that isn't there.
 
-The validator is a good gate but it only checks structure, not judgment. For real eval I'd want:
-
-1. A golden set of hand-triaged items — run the agent weekly and compare urgency and classification against the ground truth. Track drift.
-2. A mandatory human review of every P0 and P1 item before any staff action is taken. The `decision_rationale` field exists specifically for this — a reviewer should be able to read it in 10 seconds and either approve or override.
-3. Shadow mode first — run the agent in parallel with the human process for 2–4 weeks, comparing outputs without acting on them. Measure false-negative rate on safeguarding specifically.
-4. A canary test item in every batch — a synthetic item with a clear safeguarding signal, included to verify the model is still triggering P0 correctly after any prompt change.
+For production eval I'd want more than the schema validator. The validator checks that the output is well-formed; it doesn't check whether the triage judgment was right. I'd want a golden set of hand-labeled items that we run the agent against weekly and track drift on — if urgency accuracy drops after a prompt change, we know immediately. I'd also want shadow mode before going live: run the agent in parallel with the human process for a few weeks, compare outputs without acting on them, and measure the false-negative rate on safeguarding specifically. And I'd put a canary item in every batch — a synthetic message with a clear safeguarding signal — so we know the model is still catching P0 correctly after any change to the prompt or the model version.
 
 ---
 
@@ -187,27 +174,19 @@ This means if Anthropic has an outage, or a model is deprecated, or you want to 
 - **Zod validation on LLM output** — `parseOutput` trusts the JSON the model returns. A Zod parse of `RawLLMOutput` before building `ItemOutput` would catch hallucinated or missing fields early.
 - **`hold_slot` for new referrals** — I intentionally only call `hold_slot` for confirmed existing patients with a same-day need (item_8). Holding a slot for a new referral before insurance is verified and intake is complete creates noise for staff.
 
----
-
 ## 6. What I Would Do With Another 4 Hours
 
-**1. Model adapter + provider fallback.**
-Abstract the Anthropic client behind a `LLMClient` interface with implementations for both Anthropic and OpenAI. If the primary model is unavailable or rate-limited, the agent retries with the fallback. The system prompt and tool schemas translate cleanly to OpenAI's function-calling format.
+The first thing I'd fix is the final output step. Right now the agent asks Claude to write a JSON block inside a code fence and we parse it with a regex — it works, but it's fragile. If the model adds a sentence before the block, the parse fails. I'd replace it with a `submit_triage` tool that has the full `ItemOutput` shape as its `input_schema` and use `tool_choice: { type: "tool", name: "submit_triage" }` to force the model to call it. No regex, no parse errors, schema-validated by the API itself.
 
-**2. Structured output for the final response.**
-Right now the agent ends by parsing a fenced JSON block from plain text — fragile if the model adds extra commentary. I'd use `tool_choice: { type: "tool", name: "submit_triage" }` with a `submit_triage` tool whose `input_schema` is the full `ItemOutput` shape. The model is forced to call it with a validated structure. No regex, no parse errors.
+Second, I'd abstract the LLM client behind a simple interface so the agent isn't tied to Anthropic. Something like `interface LLMClient { chat(messages, tools): Promise<Response> }` with an Anthropic implementation and an OpenAI one. The system prompt and tool schemas translate cleanly to OpenAI's function-calling format. If the primary model is rate-limited or down, you swap the client — the agent loop doesn't change. Right now the model name is hardcoded in the loop, which is the kind of thing that bites you at 8am on a Monday.
 
-**3. Prompt caching.**
-Add `cache_control: { type: "ephemeral" }` on the system prompt block. On a Monday batch of 30+ items this pays back immediately — the system prompt tokens are only charged once instead of once per item.
+Third, prompt caching. The system prompt and tool definitions are about 1,200 tokens and get re-sent for every single item. Adding `cache_control: { type: "ephemeral" }` on the system block means those tokens are only charged once per batch after the first item. On a real Monday inbox with 30+ items that adds up fast.
 
-**4. Adversarial safeguarding tests.**
-Write 5–10 synthetic items with subtle safeguarding language — not just "dad getting rough" but things like "she seems scared to go home," "he has unexplained bruises," "mom mentioned he's been locked in his room." Verify the agent catches all of them as P0. This is the test suite that matters most.
+The test I'd most want to write is an adversarial safeguarding suite — 10 synthetic items with subtle signals, not just obvious ones like "dad getting rough" but things like "she doesn't want to go home since the new babysitter started," "he had marks on his arms at the last session," "mom said he's been locked in his room when he misbehaves." Every one of those should come out P0. That's the regression suite that matters before you ship anything near a real practice.
 
-**5. Retry with dead-letter queue.**
-Wrap `processItem` in a retry helper (3 attempts, exponential backoff). Items that still fail after retries go into a dead-letter list returned alongside the successful outputs — the batch doesn't abort, it just flags which items need human handling.
+I'd also wrap `processItem` in a retry helper with exponential backoff. One transient API error shouldn't kill the whole batch. Items that still fail after 3 attempts go into a dead-letter list that gets returned alongside the successful outputs — the batch finishes, it just tells you which items need a human to re-run.
 
-**6. Eval harness.**
-Build a lightweight eval that runs the agent against a golden set of hand-labeled items and reports precision/recall on urgency classification and safeguarding detection. Run it in CI on every prompt change.
+Last thing would be a lightweight eval harness that runs the agent against a golden set of hand-labeled items and reports precision and recall on urgency and safeguarding. The point isn't to hit a number — it's to have something you can run in CI every time you touch the prompt, so you know immediately if a change that improves one case breaks another.
 
 ## Your Task
 
