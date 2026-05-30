@@ -412,6 +412,55 @@ async function agentLoop(
   throw new Error(`item ${item.id}: exceeded max steps (${MAX_STEPS})`);
 }
 
+// Signals a human clinician would immediately recognize as safeguarding concerns.
+// This runs AFTER the LLM and acts as a hard safety net — if the model missed
+// a clear signal in the message, we override rather than risk a missed P0.
+const SAFEGUARDING_SIGNALS: RegExp[] = [
+  /\bgetting rough\b/i,
+  /\bhitting\b/i,
+  /\bbeing hit\b/i,
+  /\bhurt(ing)?\s+(him|her|them|my\s+(son|daughter|child|kid))\b/i,
+  /\bunexplained\s+bruises?\b/i,
+  /\bscared\s+to\s+go\s+home\b/i,
+  /\bafraid\s+to\s+go\s+home\b/i,
+  /\bunsafe\s+at\s+home\b/i,
+  /\bnot\s+safe\s+at\s+home\b/i,
+  /\blocked\s+in\s+(his|her|their|the)\s+room\b/i,
+  /\bchild\s+abuse\b/i,
+  /\bphysical\s+abuse\b/i,
+  /\bsexual\s+abuse\b/i,
+  /\bneglect(ed|ing)?\b/i,
+  /\binappropriately\s+touch(ed|ing)\b/i,
+  /\bdoesn'?t\s+want\s+to\s+go\s+home\b/i,
+  /\brefuses?\s+to\s+go\s+home\b/i,
+  /\bmarks\s+on\s+(his|her|their)\s+body\b/i,
+  /\bafraid\s+of\s+(dad|mom|father|mother|stepdad|stepfather|stepmother|caregiver|uncle|aunt)\b/i,
+];
+
+function applySafetyOverrides(item: InboxItem, output: ItemOutput): ItemOutput {
+  if (output.urgency === "P0") return output;
+
+  const text = `${item.subject} ${item.body}`;
+  const triggered = SAFEGUARDING_SIGNALS.find((p) => p.test(text));
+  if (!triggered) return output;
+
+  console.error(
+    `[safety] P0 override on ${item.id}: safeguarding signal detected (pattern: ${triggered.source})`,
+  );
+
+  return {
+    ...output,
+    urgency: "P0",
+    classification: "safeguarding",
+    escalation: output.escalation ?? {
+      reason:
+        "Safety override: message contains a potential safeguarding signal requiring immediate clinical lead review.",
+      severity: "P0",
+    },
+    decision_rationale: `${output.decision_rationale} [Post-processing safety override: safeguarding signal detected in message — escalated to P0 for mandatory clinical review.]`,
+  };
+}
+
 async function processItem(item: InboxItem): Promise<ItemOutput> {
   return withItemContext(item.id, async () => {
     console.error(`[triage] starting ${item.id}: ${item.subject}`);
@@ -427,7 +476,7 @@ async function processItem(item: InboxItem): Promise<ItemOutput> {
 
     const tools_called = getToolCallsForItem(item.id);
 
-    return {
+    const output: ItemOutput = {
       item_id: item.id,
       classification: raw.classification,
       urgency: raw.urgency,
@@ -441,6 +490,8 @@ async function processItem(item: InboxItem): Promise<ItemOutput> {
       escalation: raw.escalation,
       decision_rationale: raw.decision_rationale,
     };
+
+    return applySafetyOverrides(item, output);
   });
 }
 
