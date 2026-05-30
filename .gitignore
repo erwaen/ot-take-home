@@ -8,3 +8,4 @@ _internal/
 .env.*
 !.env.example
 *.log
+CLAUDE.md
