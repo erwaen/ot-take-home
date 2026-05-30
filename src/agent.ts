@@ -342,6 +342,73 @@ async function dispatchTool(
   }
 }
 
+function parseOutput(itemId: string, text: string): RawLLMOutput {
+  const match = text.match(/```json\s*([\s\S]+?)\s*```/);
+  if (!match) {
+    throw new Error(`item ${itemId}: no JSON block in final LLM response`);
+  }
+  try {
+    return JSON.parse(match[1]) as RawLLMOutput;
+  } catch (err) {
+    throw new Error(`item ${itemId}: failed to parse JSON output — ${err}`);
+  }
+}
+
+async function agentLoop(
+  item: InboxItem,
+  initialMessages: MessageParam[],
+): Promise<LoopResult> {
+  const messages: MessageParam[] = [...initialMessages];
+  const task_ids: string[] = [];
+  const MAX_STEPS = 6;
+
+  for (let step = 0; step < MAX_STEPS; step++) {
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      system: SYSTEM_PROMPT,
+      tools: TOOLS,
+      messages,
+    });
+
+    if (response.stop_reason === "tool_use") {
+      const toolUseBlocks = response.content.filter(
+        (b): b is ToolUseBlock => b.type === "tool_use",
+      );
+
+      const dispatched = await Promise.all(
+        toolUseBlocks.map(async (block) => {
+          const result = await dispatchTool(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+          if (result.task_id) task_ids.push(result.task_id);
+          return { block, result };
+        }),
+      );
+
+      const toolResults: ToolResultBlockParam[] = dispatched.map(
+        ({ block, result }) => ({
+          type: "tool_result" as const,
+          tool_use_id: block.id,
+          content: result.resultJson,
+        }),
+      );
+
+      messages.push({ role: "assistant", content: response.content });
+      messages.push({ role: "user", content: toolResults });
+    } else {
+      const textBlock = response.content.find((b) => b.type === "text");
+      if (!textBlock || textBlock.type !== "text") {
+        throw new Error(`item ${item.id}: no text block in final response`);
+      }
+      return { raw: parseOutput(item.id, textBlock.text), task_ids };
+    }
+  }
+
+  throw new Error(`item ${item.id}: exceeded max steps (${MAX_STEPS})`);
+}
+
 export async function runAgent(inbox: InboxItem[]): Promise<ItemOutput[]> {
   throw new Error("TODO: implement runAgent — coming in later checklist steps");
 }
