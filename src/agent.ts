@@ -376,6 +376,8 @@ async function agentLoop(
         (b): b is ToolUseBlock => b.type === "tool_use",
       );
 
+      console.error(`[triage] ${item.id} step ${step}: calling ${toolUseBlocks.map((b) => b.name).join(", ")}`);
+
       const dispatched = await Promise.all(
         toolUseBlocks.map(async (block) => {
           const result = await dispatchTool(
@@ -411,6 +413,7 @@ async function agentLoop(
 
 async function processItem(item: InboxItem): Promise<ItemOutput> {
   return withItemContext(item.id, async () => {
+    console.error(`[triage] starting ${item.id}: ${item.subject}`);
     const messages: MessageParam[] = [
       {
         role: "user",
@@ -419,6 +422,7 @@ async function processItem(item: InboxItem): Promise<ItemOutput> {
     ];
 
     const { raw, task_ids } = await agentLoop(item, messages);
+    console.error(`[triage] done    ${item.id} → ${raw.urgency} ${raw.classification}`);
 
     const tools_called = getToolCallsForItem(item.id);
 
@@ -440,5 +444,14 @@ async function processItem(item: InboxItem): Promise<ItemOutput> {
 }
 
 export async function runAgent(inbox: InboxItem[]): Promise<ItemOutput[]> {
-  throw new Error("TODO: implement runAgent — coming in later checklist steps");
+  const CONCURRENCY = 3;
+  const results: ItemOutput[] = [];
+
+  for (let i = 0; i < inbox.length; i += CONCURRENCY) {
+    const batch = inbox.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(batch.map(processItem));
+    results.push(...batchResults);
+  }
+
+  return results;
 }
