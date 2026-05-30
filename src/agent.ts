@@ -276,6 +276,65 @@ const TOOLS: Tool[] = [
 
 const client = new Anthropic();
 
+async function dispatchTool(
+  name: string,
+  input: Record<string, unknown>,
+): Promise<{ resultJson: string; task_id?: string }> {
+  switch (name) {
+    case "search_patient": {
+      const r = await search_patient(input as { name?: string; dob?: string });
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    case "verify_insurance": {
+      const r = await verify_insurance(
+        input as { payer?: string; member_id?: string },
+      );
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    case "lookup_policy": {
+      const r = await lookup_policy(input as { topic: PolicyTopic });
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    case "find_slots": {
+      const r = await find_slots(
+        input as { discipline?: Discipline; preferences?: string; language?: string },
+      );
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    case "hold_slot": {
+      const r = await hold_slot(
+        input as { slot_id: string; patient_ref: string },
+      );
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    case "create_task": {
+      const r = await create_task(
+        input as { assignee: Assignee; title: string; due: string; notes: string },
+      );
+      return { resultJson: JSON.stringify(r.data), task_id: r.data.task_id };
+    }
+    case "draft_message": {
+      const r = await draft_message(
+        input as {
+          recipient: string;
+          channel: "portal" | "email" | "phone";
+          body: string;
+          language?: "en" | "es";
+        },
+      );
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    case "escalate": {
+      const r = await escalate(
+        input as { item_id: string; reason: string; severity: "P0" | "P1" },
+      );
+      return { resultJson: JSON.stringify(r.data) };
+    }
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
 export async function runAgent(inbox: InboxItem[]): Promise<ItemOutput[]> {
   throw new Error("TODO: implement runAgent — coming in later checklist steps");
 }
