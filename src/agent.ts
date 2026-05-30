@@ -1,3 +1,4 @@
+import "dotenv/config";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   MessageParam,
@@ -41,6 +42,8 @@ interface LoopResult {
   raw: RawLLMOutput;
   task_ids: string[];
 }
+
+const client = new Anthropic();
 
 export async function runAgent(inbox: InboxItem[]): Promise<ItemOutput[]> {
   throw new Error("TODO: implement runAgent — coming in later checklist steps");
