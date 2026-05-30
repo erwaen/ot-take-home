@@ -409,6 +409,36 @@ async function agentLoop(
   throw new Error(`item ${item.id}: exceeded max steps (${MAX_STEPS})`);
 }
 
+async function processItem(item: InboxItem): Promise<ItemOutput> {
+  return withItemContext(item.id, async () => {
+    const messages: MessageParam[] = [
+      {
+        role: "user",
+        content: `Triage this inbox item:\n\n${JSON.stringify(item, null, 2)}`,
+      },
+    ];
+
+    const { raw, task_ids } = await agentLoop(item, messages);
+
+    const tools_called = getToolCallsForItem(item.id);
+
+    return {
+      item_id: item.id,
+      classification: raw.classification,
+      urgency: raw.urgency,
+      requires_human_review: true,
+      extracted_intake: raw.extracted_intake,
+      missing_info: raw.missing_info,
+      tools_called,
+      recommended_next_action: raw.recommended_next_action,
+      draft_reply: raw.draft_reply,
+      task_ids,
+      escalation: raw.escalation,
+      decision_rationale: raw.decision_rationale,
+    };
+  });
+}
+
 export async function runAgent(inbox: InboxItem[]): Promise<ItemOutput[]> {
   throw new Error("TODO: implement runAgent — coming in later checklist steps");
 }
